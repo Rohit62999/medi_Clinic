@@ -1,5 +1,6 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Menu, X } from "lucide-react";
 import { supabase } from "./supabase";
 import "./App.css";
 
@@ -449,6 +450,10 @@ function Dashboard({ session, profile }) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
   const [page, setPage] = useState("home");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [doctorSearch, setDoctorSearch] = useState("");
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [showMyProfile, setShowMyProfile] = useState(false);
   const [specialties, setSpecialties] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [loadingDirectory, setLoadingDirectory] = useState(false);
@@ -470,6 +475,11 @@ function Dashboard({ session, profile }) {
     description: "",
   });
   const [appointments, setAppointments] = useState([]);
+  const [queueEntries, setQueueEntries] = useState([]);
+  const [loadingQueue, setLoadingQueue] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [queueMessage, setQueueMessage] = useState("");
+  const [queueBusyId, setQueueBusyId] = useState(null);
   const [medicalRecords, setMedicalRecords] = useState([]);
   const [loadingMedicalRecords, setLoadingMedicalRecords] = useState(false);
   const [medicalRecordsError, setMedicalRecordsError] = useState("");
@@ -501,6 +511,25 @@ function Dashboard({ session, profile }) {
   const isDoctor = role === "doctor";
   const canUploadMedicalDocuments = role === "admin" || role === "doctor";
 
+  // Give each in-app section a browser-history entry so Back/Forward moves
+  // between CarePoint sections naturally instead of showing a toast or dialog.
+  const navigateToPage = (nextPage) => {
+    if (nextPage === page) return;
+    window.history.pushState({ carePointPage: nextPage }, "", window.location.href);
+    setPage(nextPage);
+  };
+
+  useEffect(() => {
+    window.history.replaceState({ ...(window.history.state || {}), carePointPage: "home" }, "", window.location.href);
+    const handlePopState = (event) => {
+      const previousPage = event.state?.carePointPage;
+      if (previousPage) setPage(previousPage);
+      else setPage("home");
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   async function loadDirectory() {
     setLoadingDirectory(true);
     setDirectoryError("");
@@ -514,7 +543,7 @@ function Dashboard({ session, profile }) {
         supabase
           .from("doctors")
           .select(
-            "id, full_name, qualifications, experience_years, bio, is_active, specialty_id, specialties(id, name)"
+            "id, full_name, qualifications, experience_years, bio, image_url, is_active, specialty_id, specialties(id, name)"
           )
           .order("full_name"),
         supabase.from("doctor_schedules")
@@ -542,6 +571,7 @@ function Dashboard({ session, profile }) {
     if (page === "directory") loadDirectory();
     if (page === "appointments") loadAppointments();
     if (page === "records") loadMedicalRecords();
+    if (page === "queue") { loadQueue(); if (isAdmin) loadAppointments(); }
   }, [page]);
 
   async function loadMedicalRecords() {
@@ -650,6 +680,62 @@ function Dashboard({ session, profile }) {
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function loadQueue() {
+    setLoadingQueue(true);
+    setQueueError("");
+    setQueueMessage("");
+    try {
+      const { data, error } = await supabase
+        .from("patient_queue")
+        .select("id, appointment_id, patient_id, doctor_id, queue_date, token_number, status, checked_in_at, started_at, completed_at, appointment:appointments(appointment_date, start_time, end_time, reason, doctor:doctors(full_name, specialties(name)), patient:profiles!appointments_patient_id_fkey(full_name))")
+        .eq("queue_date", todayLocal())
+        .order("doctor_id", { ascending: true })
+        .order("token_number", { ascending: true });
+      if (error) throw error;
+      setQueueEntries(data || []);
+    } catch (error) {
+      setQueueError(error.message || "Could not load the queue. Check the patient_queue table and its RLS policies.");
+      setQueueEntries([]);
+    } finally {
+      setLoadingQueue(false);
+    }
+  }
+
+  async function checkInPatient(appointment) {
+    setQueueBusyId(appointment.id);
+    setQueueError("");
+    setQueueMessage("");
+    try {
+      const { data, error } = await supabase.rpc("check_in_patient", { p_appointment_id: appointment.id });
+      if (error) throw error;
+      setQueueMessage(`Patient checked in successfully. Token #${data.token_number}.`);
+      await Promise.all([loadQueue(), loadAppointments()]);
+    } catch (error) {
+      setQueueError(error.message || "Could not check in this patient.");
+    } finally {
+      setQueueBusyId(null);
+    }
+  }
+
+  async function updateQueueStatus(entry, status) {
+    setQueueBusyId(entry.id);
+    setQueueError("");
+    setQueueMessage("");
+    const updates = { status };
+    if (status === "in_consultation") updates.started_at = new Date().toISOString();
+    if (status === "completed") updates.completed_at = new Date().toISOString();
+    try {
+      const { error } = await supabase.from("patient_queue").update(updates).eq("id", entry.id);
+      if (error) throw error;
+      setQueueMessage(`Queue updated: ${status.replaceAll("_", " ")}.`);
+      await loadQueue();
+    } catch (error) {
+      setQueueError(error.message || "Could not update queue status.");
+    } finally {
+      setQueueBusyId(null);
+    }
+  }
+
   async function loadAppointments() {
     setLoadingAppointments(true);
     setAppointmentError("");
@@ -689,7 +775,7 @@ function Dashboard({ session, profile }) {
     setAvailableSlots([]);
     setAppointmentError("");
     setAppointmentMessage("");
-    setPage("appointments");
+    navigateToPage("appointments");
   }
 
   async function loadAvailableSlots(doctor, date) {
@@ -878,6 +964,9 @@ function Dashboard({ session, profile }) {
   }
 
   async function handleSignOut() {
+    const shouldSignOut = window.confirm("Are you sure you want to sign out of CarePoint?");
+    if (!shouldSignOut) return;
+
     setSigningOut(true);
     setSignOutError("");
     const { error } = await supabase.auth.signOut();
@@ -990,9 +1079,15 @@ function Dashboard({ session, profile }) {
     await loadDirectory();
   }
 
-  const visibleDoctors = isAdmin
+  const roleVisibleDoctors = isAdmin
     ? doctors
     : doctors.filter((doctor) => doctor.is_active);
+  const visibleDoctors = roleVisibleDoctors.filter((doctor) => {
+    const query = doctorSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [doctor.full_name, doctor.qualifications, doctor.bio, doctor.specialties?.name]
+      .some((value) => String(value || "").toLowerCase().includes(query));
+  });
   const visibleSpecialties = isAdmin
     ? specialties
     : specialties.filter((specialty) => specialty.is_active);
@@ -1009,19 +1104,76 @@ function Dashboard({ session, profile }) {
         </div>
 
         <div className="user-menu">
-          <div className="avatar">{displayName.trim().charAt(0).toUpperCase()}</div>
-          <div className="user-info">
-            <strong>{displayName}</strong>
-            <span>{role}</span>
+          <div className="profile-menu-wrap">
+            <button
+              type="button"
+              className="profile-menu-trigger"
+              aria-haspopup="menu"
+              aria-expanded={profileMenuOpen}
+              onClick={() => setProfileMenuOpen((open) => !open)}
+            >
+              <span className="avatar">{displayName.trim().charAt(0).toUpperCase()}</span>
+              <span className="user-info">
+                <strong>{displayName}</strong>
+                <span>{role}</span>
+              </span>
+              <span className="profile-menu-chevron" aria-hidden="true"><ChevronDown size={16} strokeWidth={2} /></span>
+            </button>
+            {profileMenuOpen && (
+              <>
+                <button className="profile-menu-dismiss" aria-label="Close profile menu" onClick={() => setProfileMenuOpen(false)} />
+                <div className="profile-dropdown" role="menu">
+                  <div className="profile-dropdown-heading">
+                    <span className="avatar">{displayName.trim().charAt(0).toUpperCase()}</span>
+                    <div>
+                      <strong>{displayName}</strong>
+                      <span>{session.user.email}</span>
+                    </div>
+                  </div>
+                  <button type="button" role="menuitem" onClick={() => { setShowMyProfile(true); setProfileMenuOpen(false); }}>
+                    <span aria-hidden="true">◉</span> View my profile
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); handleSignOut(); }} disabled={signingOut}>
+                    <span aria-hidden="true">⇄</span> Switch account
+                  </button>
+                  <div className="profile-dropdown-footnote">Switching accounts signs you out securely first.</div>
+                </div>
+              </>
+            )}
           </div>
           <button
-            className="secondary-button"
+            className="secondary-button topbar-signout"
             onClick={handleSignOut}
             disabled={signingOut}
           >
             {signingOut ? "Signing out..." : "Sign out"}
           </button>
         </div>
+
+        {showMyProfile && (
+          <div className="profile-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowMyProfile(false); }}>
+            <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="my-profile-title">
+              <button className="profile-modal-close" type="button" aria-label="Close profile" onClick={() => setShowMyProfile(false)}>×</button>
+              <div className="profile-modal-identity">
+                <span className="profile-modal-avatar">{displayName.trim().charAt(0).toUpperCase()}</span>
+                <span className="eyebrow">CAREPOINT ACCOUNT</span>
+                <h2 id="my-profile-title">My profile</h2>
+                <p>View the details associated with your signed-in account.</p>
+              </div>
+              <dl className="profile-detail-list">
+                <div><dt>Full name</dt><dd>{profile.full_name || session.user.user_metadata?.full_name || "Not provided"}</dd></div>
+                <div><dt>Email address</dt><dd>{session.user.email || "Not available"}</dd></div>
+                <div><dt>Account role</dt><dd><span className="role-pill">{role}</span></dd></div>
+                <div><dt>Account ID</dt><dd className="profile-account-id">{session.user.id}</dd></div>
+                <div><dt>Email verification</dt><dd>{session.user.email_confirmed_at ? "Verified" : "Not verified"}</dd></div>
+              </dl>
+              <div className="profile-modal-actions">
+                <button className="secondary-button" type="button" onClick={() => setShowMyProfile(false)}>Close</button>
+                <button className="primary-button" type="button" disabled={signingOut} onClick={handleSignOut}>{signingOut ? "Signing out..." : "Switch account"}</button>
+              </div>
+            </section>
+          </div>
+        )}
       </header>
 
       <section className="dashboard-content">
@@ -1042,31 +1194,40 @@ function Dashboard({ session, profile }) {
 
         {signOutError && <div className="notice error-notice" role="alert">{signOutError}</div>}
 
-        <nav className="directory-nav" aria-label="Main navigation">
+        <div className="mobile-nav-bar">
+          <span className="mobile-nav-current">{({ home: "Overview", directory: "Doctors & specialties", appointments: "Appointments", records: "Medical records", queue: "Patient queue" })[page] || "Menu"}</span>
+          <button
+            type="button"
+            className="mobile-nav-toggle"
+            aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileNavOpen}
+            aria-controls="carepoint-main-navigation"
+            onClick={() => setMobileNavOpen((open) => !open)}
+          >
+            {mobileNavOpen ? <X size={23} /> : <Menu size={23} />}
+          </button>
+        </div>
+        <nav id="carepoint-main-navigation" className={`directory-nav${mobileNavOpen ? " mobile-nav-open" : ""}`} aria-label="Main navigation">
           <button
             className={page === "home" ? "directory-nav-button active" : "directory-nav-button"}
-            onClick={() => setPage("home")}
-          >
-            Overview
-          </button>
+            onClick={() => { navigateToPage("home"); setMobileNavOpen(false); }}
+          >Overview</button>
           <button
             className={page === "directory" ? "directory-nav-button active" : "directory-nav-button"}
-            onClick={() => setPage("directory")}
-          >
-            Doctors &amp; specialties
-          </button>
+            onClick={() => { navigateToPage("directory"); setMobileNavOpen(false); }}
+          >Doctors &amp; specialties</button>
           <button
             className={page === "appointments" ? "directory-nav-button active" : "directory-nav-button"}
-            onClick={() => { setBookingDoctor(null); setPage("appointments"); }}
-          >
-            Appointments
-          </button>
+            onClick={() => { setBookingDoctor(null); navigateToPage("appointments"); setMobileNavOpen(false); }}
+          >Appointments</button>
           <button
             className={page === "records" ? "directory-nav-button active" : "directory-nav-button"}
-            onClick={() => setPage("records")}
-          >
-            Medical records
-          </button>
+            onClick={() => { navigateToPage("records"); setMobileNavOpen(false); }}
+          >Medical records</button>
+          <button
+            className={page === "queue" ? "directory-nav-button active" : "directory-nav-button"}
+            onClick={() => { navigateToPage("queue"); setMobileNavOpen(false); }}
+          >Patient queue</button>
         </nav>
 
         {page === "home" ? (
@@ -1079,19 +1240,19 @@ function Dashboard({ session, profile }) {
               <span className="role-pill">{role}</span>
             </div>
             <div className="feature-grid">
-              <button className="feature-card feature-card-button" onClick={() => setPage("directory")}>
+              <button className="feature-card feature-card-button" onClick={() => navigateToPage("directory")}>
                 <div className="feature-number">01</div>
                 <h3>Doctors &amp; departments</h3>
                 <p>{isAdmin ? "Add doctors and manage specialties." : isDoctor ? "Browse the hospital directory; your appointments remain limited to your own profile." : "Browse active doctors and specialties."}</p>
                 <span className="coming-soon">Open directory →</span>
               </button>
-              <button className="feature-card feature-card-button" onClick={() => { setBookingDoctor(null); setPage("appointments"); }}>
+              <button className="feature-card feature-card-button" onClick={() => { setBookingDoctor(null); navigateToPage("appointments"); }}>
                 <div className="feature-number">02</div>
                 <h3>Appointments</h3>
                 <p>{isAdmin ? "Review all requests and update appointment status." : isDoctor ? "View only appointments assigned to you and update their progress." : "Request a visit and review your appointment status."}</p>
                 <span className="coming-soon">Open appointments →</span>
               </button>
-              <button className="feature-card feature-card-button" onClick={() => setPage("records")}>
+              <button className="feature-card feature-card-button" onClick={() => navigateToPage("records")}>
                 <div className="feature-number">03</div>
                 <h3>Medical records</h3>
                 <p>{isAdmin ? "Clinical records are restricted to protect patient privacy." : isDoctor ? "Review documents for patients assigned to your care, subject to access policies." : "Review your visit summaries and clinical notes."}</p>
@@ -1156,6 +1317,47 @@ function Dashboard({ session, profile }) {
               </div>
             )}
           </section>
+        ) : page === "queue" ? (
+          <section className="doctor-directory queue-page">
+            <div className="directory-heading">
+              <div>
+                <h2>Patient queue</h2>
+                <p>{isAdmin ? "Check in today's confirmed appointments and monitor each doctor's queue." : isDoctor ? "Manage today's queue for your linked doctor profile." : "Track your token and estimated waiting time for today's visit."}</p>
+              </div>
+              <button className="secondary-button" onClick={loadQueue} disabled={loadingQueue}>{loadingQueue ? "Refreshing..." : "Refresh queue"}</button>
+            </div>
+            {queueError && <div className="notice error-notice" role="alert">{queueError}</div>}
+            {queueMessage && <div className="notice success-notice" role="status">{queueMessage}</div>}
+            {isAdmin && <div className="queue-checkin-panel">
+              <h3>Check in a patient</h3>
+              <p>Only confirmed appointments scheduled for today can be checked in.</p>
+              {appointments.filter(a => a.appointment_date === todayLocal() && a.status === "confirmed" && !queueEntries.some(q => String(q.appointment_id) === String(a.id))).length === 0 ? <p className="form-hint">No eligible appointments found. Refresh Appointments first if you have just confirmed a booking.</p> : <div className="queue-checkin-list">
+                {appointments.filter(a => a.appointment_date === todayLocal() && a.status === "confirmed" && !queueEntries.some(q => String(q.appointment_id) === String(a.id))).map(a => <article className="queue-checkin-row" key={a.id}>
+                  <div><strong>{a.patient?.full_name || "Patient"}</strong><span>{a.doctor?.full_name || "Doctor"} · {String(a.start_time).slice(0,5)} · Appointment #{a.id}</span></div>
+                  <button className="primary-button" disabled={queueBusyId === a.id} onClick={() => checkInPatient(a)}>{queueBusyId === a.id ? "Checking in..." : "Check in"}</button>
+                </article>)}
+              </div>}
+            </div>}
+            {loadingQueue ? <p className="directory-empty-state">Loading today's queue...</p> : queueEntries.length === 0 ? <div className="records-empty-state"><div className="records-empty-icon">+</div><h3>No patients in today's queue</h3><p>{isAdmin ? "Check in a confirmed appointment to create the first token." : isDoctor ? "Today's checked-in patients will appear here." : "When you are checked in for an appointment, your token will appear here."}</p></div> : <div className="queue-list">
+              {queueEntries.filter(entry => isAdmin || (isDoctor ? true : String(entry.patient_id) === String(session.user.id))).map(entry => {
+                const ahead = queueEntries.filter(other => String(other.doctor_id) === String(entry.doctor_id) && other.queue_date === entry.queue_date && other.token_number < entry.token_number && ["waiting", "next", "in_consultation"].includes(other.status)).length;
+                const canSeeWholeQueue = isAdmin || isDoctor;
+                const activeCount = queueEntries.filter(other => String(other.doctor_id) === String(entry.doctor_id) && ["waiting", "next", "in_consultation"].includes(other.status)).length;
+                const estimate = ahead * 10;
+                return <article className="queue-card" key={entry.id}>
+                  <div className="queue-card-top"><div><span className="appointment-reference">{entry.appointment?.doctor?.full_name || "Doctor"} · {entry.queue_date}</span><h3>{entry.appointment?.patient?.full_name || (String(entry.patient_id) === String(session.user.id) ? "Your appointment" : "Patient")}</h3></div><span className={`queue-status queue-status-${entry.status}`}>{entry.status.replaceAll("_", " ")}</span></div>
+                  <div className="queue-token-row"><div><span>Token</span><strong>#{entry.token_number}</strong></div><div><span>Patients ahead</span><strong>{entry.status === "completed" || entry.status === "skipped" ? "—" : canSeeWholeQueue ? ahead : "Live update"}</strong></div><div><span>Estimated wait</span><strong>{entry.status === "completed" ? "Completed" : entry.status === "in_consultation" ? "In progress" : canSeeWholeQueue ? `${estimate}–${estimate + 10} min` : "Ask reception"}</strong></div></div>
+                  <p className="queue-hint">{canSeeWholeQueue ? "Estimate uses an approximate 10 minutes per patient and may change due to delays or urgent cases." : "Your queue details are private. Reception can provide a current waiting-time estimate."}</p>
+                  {(isAdmin || isDoctor) && !["completed", "skipped"].includes(entry.status) && <div className="directory-actions queue-actions">
+                    {entry.status === "waiting" && <button className="secondary-button" disabled={queueBusyId === entry.id} onClick={() => updateQueueStatus(entry, "next")}>Call next</button>}
+                    {entry.status !== "in_consultation" && <button className="primary-button" disabled={queueBusyId === entry.id} onClick={() => updateQueueStatus(entry, "in_consultation")}>Start consultation</button>}
+                    {entry.status !== "completed" && <button className="secondary-button" disabled={queueBusyId === entry.id} onClick={() => updateQueueStatus(entry, "completed")}>Mark completed</button>}
+                    <button className="secondary-button" disabled={queueBusyId === entry.id} onClick={() => updateQueueStatus(entry, "skipped")}>Skip</button>
+                  </div>}
+                </article>;
+              })}
+            </div>}
+          </section>
         ) : page === "appointments" ? (
           <section className="doctor-directory">
             <div className="directory-heading">
@@ -1184,7 +1386,7 @@ function Dashboard({ session, profile }) {
                 </div>
                 <label className="field">Reason for visit (optional)<textarea rows="3" maxLength="500" value={bookingForm.reason} onChange={(e) => setBookingForm({ ...bookingForm, reason: e.target.value })} placeholder="Briefly describe what you need help with" /></label>
                 <p className="form-hint">Slots follow the doctor's configured working hours and appointment duration. Pending and confirmed appointments are unavailable to other patients.</p>
-                <div className="directory-actions"><button type="submit" className="primary-button" disabled={savingAppointment || loadingSlots || !bookingForm.appointment_date || !bookingForm.start_time || !bookingForm.end_time}>{savingAppointment ? "Submitting..." : "Submit appointment request"}</button><button type="button" className="secondary-button" onClick={() => { setBookingDoctor(null); setPage("directory"); }}>Back to doctors</button></div>
+                <div className="directory-actions"><button type="submit" className="primary-button" disabled={savingAppointment || loadingSlots || !bookingForm.appointment_date || !bookingForm.start_time || !bookingForm.end_time}>{savingAppointment ? "Submitting..." : "Submit appointment request"}</button><button type="button" className="secondary-button" onClick={() => { setBookingDoctor(null); navigateToPage("directory"); }}>Back to doctors</button></div>
               </form>
             )}
             {!bookingDoctor && (loadingAppointments ? <p className="directory-empty-state">Loading appointments...</p> : appointments.length === 0 ? <p className="directory-empty-state">No appointments found yet. {isAdmin ? "Patient requests will appear here." : isDoctor ? "Appointments assigned to your linked doctor profile will appear here." : "Open Doctors & specialties to request your first appointment."}</p> : (
@@ -1197,7 +1399,7 @@ function Dashboard({ session, profile }) {
                     </div>
                     <div className="appointment-meta"><span><strong>Date</strong>{appointment.appointment_date}</span><span><strong>Time</strong>{String(appointment.start_time).slice(0,5)}–{String(appointment.end_time).slice(0,5)}</span>{(isAdmin || isDoctor) && <span><strong>Patient</strong>{appointment.patient?.full_name || "Patient"}</span>}</div>
                     {appointment.reason && <p className="appointment-reason"><strong>Reason:</strong> {appointment.reason}</p>}
-                    {(isAdmin || isDoctor) && <div className="directory-actions appointment-actions">{isAdmin && appointment.status !== "confirmed" && appointment.status !== "completed" && <button className="primary-button" onClick={() => updateAppointmentStatus(appointment, "confirmed")}>Confirm</button>}{appointment.status !== "cancelled" && appointment.status !== "completed" && <button className="secondary-button" onClick={() => updateAppointmentStatus(appointment, "cancelled")}>Cancel</button>}{appointment.status === "confirmed" && <button className="secondary-button" onClick={() => updateAppointmentStatus(appointment, "completed")}>Mark completed</button>}</div>}
+                    {(isAdmin || isDoctor) && <div className="directory-actions appointment-actions">{isAdmin && appointment.status !== "confirmed" && appointment.status !== "completed" && <button className="primary-button" onClick={() => updateAppointmentStatus(appointment, "confirmed")}>Confirm</button>}{appointment.status !== "cancelled" && appointment.status !== "completed" && <button className="secondary-button" onClick={() => updateAppointmentStatus(appointment, "cancelled")}>Cancel</button>}{appointment.status === "confirmed" && <button className="secondary-button" onClick={() => updateAppointmentStatus(appointment, "completed")}>Mark completed</button>}{isAdmin && appointment.status === "confirmed" && appointment.appointment_date === todayLocal() && <button className="primary-button" onClick={() => { navigateToPage("queue"); }}>Open queue to check in</button>}</div>}
                   </article>
                 ))}
               </div>
@@ -1327,16 +1529,30 @@ function Dashboard({ session, profile }) {
                 <div className="section-heading doctor-section-heading">
                   <div>
                     <h2>Doctors</h2>
-                    <p>{visibleDoctors.length} doctor{visibleDoctors.length === 1 ? "" : "s"}</p>
+                    <p>{visibleDoctors.length} matching doctor{visibleDoctors.length === 1 ? "" : "s"}</p>
                   </div>
                 </div>
+                <label className="field doctor-search-field">
+                  Search doctors
+                  <input
+                    type="search"
+                    value={doctorSearch}
+                    onChange={(event) => setDoctorSearch(event.target.value)}
+                    placeholder="Search by name, specialty, qualification..."
+                    aria-label="Search doctors by name, specialty, or qualification"
+                  />
+                </label>
                 {visibleDoctors.length === 0 ? (
                   <p className="directory-empty-state">No doctors have been added yet. {isAdmin ? "Use “Add doctor” above to create the first listing." : ""}</p>
                 ) : (
                   <div className="doctor-grid">
                     {visibleDoctors.map((doctor) => (
                       <article className="doctor-card" key={doctor.id}>
-                        <div className="doctor-avatar">{doctor.full_name.trim().charAt(0).toUpperCase()}</div>
+                        {doctor.image_url ? (
+                          <img className="doctor-avatar doctor-photo" src={doctor.image_url} alt={`Portrait of ${doctor.full_name}`} loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+                        ) : (
+                          <div className="doctor-avatar">{doctor.full_name.trim().charAt(0).toUpperCase()}</div>
+                        )}
                         <div className="doctor-details">
                           <div className="doctor-card-heading">
                             <h3>{doctor.full_name}</h3>
@@ -1359,18 +1575,10 @@ function Dashboard({ session, profile }) {
             )}
           </section>
         )}
-
-        <div className="security-note">
-          <span className="security-check">✓</span>
-          <div>
-            <strong>Authenticated session</strong>
-            <p>Signed in as {session.user.email}. Database permissions are enforced by Supabase Row Level Security, not just by the visible buttons.</p>
-          </div>
-        </div>
       </section>
 
       <footer className="dashboard-footer">
-        CarePoint Hospital &amp; Health · Demonstration application
+        CarePoint Hospital &amp; Health · Created by Rohit
       </footer>
     </main>
   );
