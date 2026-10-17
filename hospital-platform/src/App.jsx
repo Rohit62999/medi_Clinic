@@ -486,6 +486,7 @@ function Dashboard({ session, profile }) {
   const [medicalRecordPatients, setMedicalRecordPatients] = useState([]);
   const [loadingRecordPatients, setLoadingRecordPatients] = useState(false);
   const [uploadingMedicalRecord, setUploadingMedicalRecord] = useState(false);
+  const [deletingMedicalRecordId, setDeletingMedicalRecordId] = useState(null);
   const [medicalUploadMessage, setMedicalUploadMessage] = useState("");
   const [medicalUploadError, setMedicalUploadError] = useState("");
   const [medicalUploadForm, setMedicalUploadForm] = useState({ patient_id: "", title: "", file: null });
@@ -543,7 +544,7 @@ function Dashboard({ session, profile }) {
         supabase
           .from("doctors")
           .select(
-            "id, full_name, qualifications, experience_years, bio, image_url, is_active, specialty_id, specialties(id, name)"
+            "id, full_name, qualifications, bio, image_url, is_active, specialty_id, specialties(id, name)"
           )
           .order("full_name"),
         supabase.from("doctor_schedules")
@@ -662,7 +663,18 @@ function Dashboard({ session, profile }) {
       await loadMedicalRecords();
     } catch (error) {
       console.error("Medical document upload error:", error);
-      setMedicalUploadError(error.message || "Upload failed. Check storage policies and your authorization.");
+      const message = String(error?.message || "");
+      if (/bucket not found/i.test(message)) {
+        setMedicalUploadError('Upload failed: the private Storage bucket "medical-documents" does not exist. Create it in Supabase Storage, then retry.');
+      } else if (/row-level security|not allowed|permission|unauthorized|403/i.test(message)) {
+        setMedicalUploadError("Upload blocked by Supabase permissions. Confirm this account has the admin/doctor role and that Storage INSERT and medical_records INSERT policies allow this user.");
+      } else if (/payload too large|file size|maximum.*size/i.test(message)) {
+        setMedicalUploadError("Upload failed because the file exceeds the Storage size limit. Choose a smaller file (the app limit is 10 MB).");
+      } else if (/duplicate|already exists/i.test(message)) {
+        setMedicalUploadError("A file with this path already exists. Choose the file again and retry.");
+      } else {
+        setMedicalUploadError(`Upload failed: ${message || "Unknown error"}. Check the browser console and Supabase Storage logs for details.`);
+      }
     } finally {
       setUploadingMedicalRecord(false);
     }
@@ -678,6 +690,49 @@ function Dashboard({ session, profile }) {
       return;
     }
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function deleteMedicalDocument(record) {
+    if (!canUploadMedicalDocuments) {
+      setMedicalUploadError("Only authorized admins and doctors can delete medical documents.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Permanently delete "${record.title || record.file_name || "this document"}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingMedicalRecordId(record.id);
+    setMedicalUploadError("");
+    setMedicalUploadMessage("");
+    try {
+      // Remove the private Storage object first, then its database metadata.
+      if (record.file_path) {
+        const { error: storageError } = await supabase.storage
+          .from("medical-documents")
+          .remove([record.file_path]);
+        if (storageError) throw storageError;
+      }
+
+      const { error: recordError } = await supabase
+        .from("medical_records")
+        .delete()
+        .eq("id", record.id);
+      if (recordError) {
+        throw new Error(`The file was removed from Storage, but its database record could not be deleted: ${recordError.message}. Apply the medical_records DELETE table grant and RLS policy in Supabase, then remove the orphaned database row.`);
+      }
+
+      setMedicalRecords((current) => current.filter((item) => item.id !== record.id));
+      setMedicalUploadMessage("Medical document deleted.");
+    } catch (error) {
+      console.error("Medical document deletion error:", error);
+      setMedicalUploadError(
+        `Could not fully delete the document: ${error?.message || "Unknown error"}. Check Storage DELETE and medical_records DELETE policies.`
+      );
+      await loadMedicalRecords();
+    } finally {
+      setDeletingMedicalRecordId(null);
+    }
   }
 
   async function loadQueue() {
@@ -1305,13 +1360,24 @@ function Dashboard({ session, profile }) {
                 {medicalRecords.map((record) => (
                   <article className="medical-record-card" key={record.id}>
                     <div className="medical-record-header">
-                      <div><span className="appointment-reference">Medical record · {record.record_date}</span><h3>{record.title || "Clinical document"}</h3></div>
+                      <div>
+                        <span className="appointment-reference">Medical record · {record.record_date}</span>
+                        <h3>{record.title || "Clinical document"}</h3>
+                        {canUploadMedicalDocuments && (
+                          <p className="medical-record-doctor">
+                            Patient: {medicalRecordPatients.find((patient) => patient.id === record.patient_id)?.full_name || `Patient ID ${String(record.patient_id || "").slice(0, 8) || "unavailable"}`}
+                          </p>
+                        )}
+                      </div>
                       <span className="record-private-label">Private</span>
                     </div>
                     {record.file_name && <p className="medical-record-doctor">{record.file_name} · {record.file_size_bytes ? `${(record.file_size_bytes / (1024 * 1024)).toFixed(2)} MB` : "File"}</p>}
                     {record.diagnosis && <div className="medical-record-section"><strong>Diagnosis / assessment</strong><p>{record.diagnosis}</p></div>}
                     {record.notes && <div className="medical-record-section"><strong>Visit notes</strong><p>{record.notes}</p></div>}
-                    {record.file_path && <div className="directory-actions"><button type="button" className="secondary-button" onClick={() => openMedicalDocument(record)}>Open document securely</button></div>}
+                    <div className="directory-actions">
+                      {record.file_path && <button type="button" className="secondary-button" onClick={() => openMedicalDocument(record)}>Open document securely</button>}
+                      {canUploadMedicalDocuments && <button type="button" className="secondary-button" onClick={() => deleteMedicalDocument(record)} disabled={deletingMedicalRecordId === record.id}>{deletingMedicalRecordId === record.id ? "Deleting..." : "Delete document"}</button>}
+                    </div>
                   </article>
                 ))}
               </div>
@@ -1375,14 +1441,19 @@ function Dashboard({ session, profile }) {
                 <label className="field">Doctor<input value={bookingDoctor.full_name} readOnly /></label>
                 <label className="field">Appointment date<input type="date" required min={todayLocal()} value={bookingForm.appointment_date} onChange={(e) => { const date = e.target.value; setBookingForm((current) => ({ ...current, appointment_date: date, start_time: "", end_time: "" })); loadAvailableSlots(bookingDoctor, date); }} /></label>
                 <div className="available-slots-panel">
-                  <strong>Available appointment slots</strong>
-                  {!bookingForm.appointment_date ? <p className="form-hint">Choose a date to see available times.</p>
-                    : loadingSlots ? <p className="form-hint">Checking availability...</p>
-                    : availableSlots.length === 0 ? <p className="form-hint">No available slots for this date. The doctor may not work this day, or all slots may be booked.</p>
+                  <div className="slots-panel-heading">
+                    <div><span className="slots-eyebrow">YOUR VISIT</span><strong>Choose a time slot</strong></div>
+                    <span className="slots-count">{availableSlots.length} {availableSlots.length === 1 ? "time" : "times"}</span>
+                  </div>
+                  {!bookingForm.appointment_date ? <p className="form-hint slots-empty">Choose an appointment date to see available times.</p>
+                    : loadingSlots ? <p className="form-hint slots-empty">Checking available times…</p>
+                    : availableSlots.length === 0 ? <p className="form-hint slots-empty">No slots are available for this date. The doctor may not work this day, or all slots may be booked.</p>
                     : <div className="slot-grid">{availableSlots.map((slot) => {
                       const selected = bookingForm.start_time === slot.start_time;
-                      return <button key={slot.start_time} type="button" className={`slot-button${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => setBookingForm((current) => ({ ...current, start_time: slot.start_time, end_time: slot.end_time }))}>{slot.start_time} – {slot.end_time}</button>;
+                      return <button key={slot.start_time} type="button" className={`slot-button${selected ? " selected" : ""}`} aria-pressed={selected} onClick={() => setBookingForm((current) => ({ ...current, start_time: slot.start_time, end_time: slot.end_time }))}><span className="slot-dot" aria-hidden="true" />{slot.start_time} <span className="slot-dash">–</span> {slot.end_time}{selected && <span className="slot-check" aria-hidden="true">✓</span>}</button>;
                     })}</div>}
+                  {bookingForm.start_time && bookingForm.end_time && <div className="selected-slot-summary" role="status"><span className="selected-slot-check" aria-hidden="true">✓</span><span><strong>Time selected</strong><small>{bookingForm.start_time} – {bookingForm.end_time}</small></span><button type="button" onClick={() => setBookingForm((current) => ({ ...current, start_time: "", end_time: "" }))}>Change</button></div>}
+                  {!bookingForm.start_time && availableSlots.length > 0 && !loadingSlots && <p className="slot-selection-hint">Tap a time above to select it.</p>}
                 </div>
                 <label className="field">Reason for visit (optional)<textarea rows="3" maxLength="500" value={bookingForm.reason} onChange={(e) => setBookingForm({ ...bookingForm, reason: e.target.value })} placeholder="Briefly describe what you need help with" /></label>
                 <p className="form-hint">Slots follow the doctor's configured working hours and appointment duration. Pending and confirmed appointments are unavailable to other patients.</p>
@@ -1410,7 +1481,7 @@ function Dashboard({ session, profile }) {
             <div className="directory-heading">
               <div>
                 <h2>Doctors &amp; specialties</h2>
-                <p>Directory information is stored in your Supabase database.</p>
+                <p>Explore our medical team and find care that fits your needs.</p>
               </div>
               <button className="secondary-button" onClick={loadDirectory} disabled={loadingDirectory}>
                 {loadingDirectory ? "Refreshing..." : "Refresh"}
@@ -1448,10 +1519,6 @@ function Dashboard({ session, profile }) {
                 <label className="field">
                   Qualifications
                   <input value={doctorForm.qualifications} onChange={(e) => setDoctorForm({ ...doctorForm, qualifications: e.target.value })} placeholder="MBBS, MD" />
-                </label>
-                <label className="field">
-                  Years of experience
-                  <input type="number" min="0" max="80" value={doctorForm.experience_years} onChange={(e) => setDoctorForm({ ...doctorForm, experience_years: e.target.value })} />
                 </label>
                 <label className="field">
                   Short introduction
@@ -1560,7 +1627,13 @@ function Dashboard({ session, profile }) {
                           </div>
                           <p className="doctor-specialty">{doctor.specialties?.name || "Specialty not assigned"}</p>
                           {doctor.qualifications && <p>{doctor.qualifications}</p>}
-                          <p>{doctor.experience_years} year{doctor.experience_years === 1 ? "" : "s"} of experience</p>
+                          <div className="doctor-working-days">
+                            <span className="doctor-working-days-label">Available days</span>
+                            <div className="doctor-day-chips">
+                              {WEEKDAYS.filter((day) => doctorHours.some((row) => String(row.doctor_id) === String(doctor.id) && Number(row.day_of_week) === day.value && row.is_active !== false)).map((day) => <span className="doctor-day-chip" key={day.value}>{day.label}</span>)}
+                              {!WEEKDAYS.some((day) => doctorHours.some((row) => String(row.doctor_id) === String(doctor.id) && Number(row.day_of_week) === day.value && row.is_active !== false)) && <span className="doctor-days-unset">Schedule not published</span>}
+                            </div>
+                          </div>
                           {doctor.bio && <p className="doctor-bio">{doctor.bio}</p>}
                         </div>
                         <div className="doctor-card-actions">
