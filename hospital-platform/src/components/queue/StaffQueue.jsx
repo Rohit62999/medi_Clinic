@@ -98,8 +98,8 @@ export function StaffQueue({ isAdmin, isDoctor, myDoctor, myDoctorLoaded }) {
       const done = board.entries.filter((e) => e.status === "completed" && e.started_at && e.completed_at);
       const average = done.length
         ? Math.round(
-            done.reduce((sum, e) => sum + (new Date(e.completed_at) - new Date(e.started_at)) / 60000, 0) / done.length
-          )
+          done.reduce((sum, e) => sum + (new Date(e.completed_at) - new Date(e.started_at)) / 60000, 0) / done.length
+        )
         : 10;
       return {
         ...board,
