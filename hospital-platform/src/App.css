@@ -4,33 +4,34 @@
    Tokens
    ------------------------------------------------------------------ */
 :root {
-  --canvas: #f3f5f7;
+  --canvas: #EDF9F0;
   --surface: #ffffff;
-  --surface-sunk: #f7f9fa;
-  --ink: #17242e;
-  --ink-soft: #55646f;
-  --ink-faint: #7d8a94;
-  --line: #dce2e7;
-  --line-strong: #c5ced5;
+  --surface-sunk: #f4faf6;
+  --ink: #19271d;
+  --ink-soft: #4a5c4e;
+  --ink-faint: #738477;
+  --line: #CFD6DD;
+  --line-strong: #b2bec7;
 
-  --primary: #22577a;
-  --primary-hover: #1b4762;
-  --primary-tint: #e8f0f5;
-  --primary-ink: #173f59;
+  --primary: #617A67;
+  --primary-hover: #4e6353;
+  --primary-light: #95C7A8;
+  --primary-tint: #CFEAD9;
+  --primary-ink: #26382a;
 
-  --signal: #f2b544;
-  --signal-tint: #fdf3dd;
-  --signal-ink: #6e4700;
+  --signal: #d88922;
+  --signal-tint: #fef4e5;
+  --signal-ink: #5c3800;
 
-  --success: #2e7d5b;
-  --success-tint: #e6f3ec;
-  --danger: #b4372f;
-  --danger-tint: #fbeae8;
+  --success: #477754;
+  --success-tint: #CFEAD9;
+  --danger: #b8423b;
+  --danger-tint: #fdeeee;
 
   --radius-control: 8px;
   --radius-panel: 12px;
-  --shadow-float: 0 12px 32px rgba(23, 36, 46, 0.14);
-  --focus: 0 0 0 3px rgba(34, 87, 122, 0.28);
+  --shadow-float: 0 12px 32px rgba(25, 39, 29, 0.12);
+  --focus: 0 0 0 3px rgba(97, 122, 103, 0.35);
 
   --header-h: 64px;
   --page-pad: 32px;
@@ -369,20 +370,20 @@ a {
 
 .notice-info {
   background: var(--primary-tint);
-  border-color: #c9dae6;
+  border-color: var(--primary-light);
   color: var(--primary-ink);
 }
 
 .notice-success {
   background: var(--success-tint);
-  border-color: #bfdccd;
-  color: #1f5a40;
+  border-color: var(--primary-light);
+  color: #204b2c;
 }
 
 .notice-error {
   background: var(--danger-tint);
-  border-color: #efc5c1;
-  color: #8a2a24;
+  border-color: #f0c2be;
+  color: #8a251f;
 }
 
 .notice-close {
@@ -431,18 +432,18 @@ a {
 .badge-completed,
 .badge-in_consultation {
   background: var(--success-tint);
-  color: #1f5a40;
+  color: #204b2c;
 }
 
 .badge-cancelled,
 .badge-skipped {
   background: var(--danger-tint);
-  color: #8a2a24;
+  color: #8a251f;
 }
 
 .badge-token {
   background: var(--signal);
-  color: #3f2900;
+  color: #4a2c00;
 }
 
 .chip-count {
@@ -526,8 +527,8 @@ a {
   justify-content: space-between;
   gap: 40px;
   padding: 40px clamp(28px, 5vw, 64px);
-  background: var(--primary-ink);
-  color: #e6eef3;
+  background: linear-gradient(155deg, #1d2c20 0%, #324738 52%, #617A67 100%);
+  color: #EDF9F0;
 }
 
 .auth-intro .brand,
@@ -536,7 +537,7 @@ a {
 }
 
 .auth-intro .brand-mark rect {
-  fill: rgba(255, 255, 255, 0.14);
+  fill: rgba(207, 234, 217, 0.22);
 }
 
 .auth-intro-body h2 {
@@ -562,17 +563,17 @@ a {
   grid-template-columns: 18px 1fr;
   gap: 12px;
   align-items: start;
-  color: #c9d8e2;
+  color: #CFEAD9;
 }
 
 .auth-points svg {
   margin-top: 2px;
-  color: var(--signal);
+  color: #95C7A8;
 }
 
 .auth-intro-foot {
   font-size: 13px;
-  color: #9fb5c4;
+  color: #95C7A8;
 }
 
 .auth-form-area {
@@ -815,7 +816,7 @@ a {
 .drawer-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(23, 36, 46, 0.42);
+  background: rgba(25, 39, 29, 0.45);
   opacity: 0;
   transition: opacity 0.25s ease;
 }
@@ -1124,7 +1125,7 @@ ul.panel.row-list {
   margin-bottom: 16px;
   padding: 3px;
   border-radius: 10px;
-  background: #e6eaee;
+  background: #CFD6DD;
 }
 
 .segmented button {
@@ -1141,7 +1142,7 @@ ul.panel.row-list {
 .segmented button[aria-pressed="true"] {
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(23, 36, 46, 0.12);
+  box-shadow: 0 1px 2px rgba(25, 39, 29, 0.12);
 }
 
 .list-toolbar {
@@ -1311,7 +1312,7 @@ ul.panel.row-list {
 }
 
 .chip[aria-pressed="true"] .chip-count {
-  color: #cfe0ec;
+  color: #CFEAD9;
 }
 
 .chip-inactive {
@@ -1423,7 +1424,7 @@ ul.panel.row-list {
   height: 26px;
   border-radius: 50%;
   background: transparent;
-  color: #b3bcc3;
+  color: #98a69d;
   font-size: 12px;
   font-weight: 500;
   text-decoration: line-through;
@@ -1526,7 +1527,7 @@ ul.panel.row-list {
 }
 
 .chip-date[aria-pressed="true"] span {
-  color: #cfe0ec;
+  color: #CFEAD9;
 }
 
 .slot-grid {
@@ -1769,7 +1770,7 @@ ul.panel.row-list {
 .queue-next .queue-token {
   background: var(--signal);
   border-color: var(--signal);
-  color: #3f2900;
+  color: #4a2c00;
 }
 
 .queue-completed,
@@ -1788,7 +1789,7 @@ ul.panel.row-list {
   place-items: center;
   padding: 20px;
   overflow-y: auto;
-  background: rgba(23, 36, 46, 0.42);
+  background: rgba(25, 39, 29, 0.45);
 }
 
 .modal {
